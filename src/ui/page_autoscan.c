@@ -2,9 +2,10 @@
 
 #include <minIni.h>
 
+#include "core/settings.h"
 #include "ui/ui_style.h"
 
-static lv_coord_t col_dsc[] = {100, 150, 180, 220, 180, 160, LV_GRID_TEMPLATE_LAST};
+static lv_coord_t col_dsc[] = {160, 150, 180, 220, 180, 160, LV_GRID_TEMPLATE_LAST};
 static lv_coord_t row_dsc[] = {60, 60, 60, 60, 60, 60, 60, 60, 60, 60, LV_GRID_TEMPLATE_LAST};
 
 static btn_group_t btn_group0;
@@ -89,4 +90,5 @@ page_pack_t pp_autoscan = {
     .exit = NULL,
     .on_roller = NULL,
     .on_click = page_autoscan_on_click,
+    .on_right_button = NULL,
 };

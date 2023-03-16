@@ -1,15 +1,13 @@
 #!/bin/bash
 set -e
 
-if [ ! -d media ]; then
-	echo "Extracting media libraries..."
-	cat media.tar.gzaa media.tar.gzab | tar xz 
-fi
+TOOLCHAIN_URL="https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--musl--stable-2018.02-2.tar.bz2"
 
 if [ ! -d toolchain ]; then
 	echo "Extracting toolchain..."
-	tar xzvf toolchain.tar.gz
+	mkdir toolchain
+	wget -qO- "$TOOLCHAIN_URL" | tar xj --strip-components=1 -C toolchain
 fi
 
 rm -rf build && mkdir build
-cmake . -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -Bbuild
+cmake . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=toolchain/share/buildroot/toolchainfile.cmake -Bbuild

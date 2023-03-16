@@ -9,18 +9,20 @@
 #include <log/log.h>
 #include <minIni.h>
 
-#include "../core/common.hh"
-#include "../core/defines.h"
-#include "../core/osd.h"
-#include "../driver/dm5680.h"
-#include "../driver/dm6302.h"
-#include "../driver/hardware.h"
-#include "../driver/i2c.h"
-#include "../driver/oled.h"
-#include "../driver/uart.h"
-#include "fbtools.h"
-#include "msp_displayport.h"
-#include "page_common.h"
+#include "core/app_state.h"
+#include "core/common.hh"
+#include "core/defines.h"
+#include "core/msp_displayport.h"
+#include "core/osd.h"
+#include "core/settings.h"
+#include "driver/dm5680.h"
+#include "driver/dm6302.h"
+#include "driver/fbtools.h"
+#include "driver/hardware.h"
+#include "driver/i2c.h"
+#include "driver/oled.h"
+#include "driver/uart.h"
+#include "ui/page_common.h"
 #include "ui/ui_main_menu.h"
 #include "ui/ui_porting.h"
 #include "ui/ui_style.h"
@@ -57,12 +59,12 @@ typedef struct {
 
 channel_t channel_tb[10];
 channel_status_t channel_status_tb[10];
+int valid_channel_tb[11];
+int user_select_index = 0;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // local
 static int auto_scaned_cnt = 0;
-static int valid_channel_tb[11];
-static int user_select_index = 0;
 
 static lv_obj_t *progressbar;
 static lv_obj_t *label;
@@ -318,59 +320,6 @@ int8_t scan_now(void) {
     return valid_index;
 }
 
-static bool is_720p60 = false;
-
-//////////////////////////////////////////////////////////////////////
-// is_default:
-//    true = load from g_settings
-//    false = user selected from auto scan page
-void switch_to_video(bool is_default) {
-    int ch = valid_channel_tb[user_select_index];
-
-    if (is_default) {
-        ch = g_setting.scan.channel - 1;
-    } else {
-        g_setting.scan.channel = ch + 1;
-        ini_putl("scan", "channel", g_setting.scan.channel, SETTING_INI);
-    }
-
-    LOGI("switch to ch:%d, CAM_MODE=%d 4:3=%d", g_setting.scan.channel, CAM_MODE, cam_4_3);
-    DM6302_SetChannel(ch);
-    DM5680_clear_vldflg();
-    DM5680_req_vldflg();
-    progress_bar.start = 0;
-
-    is_720p60 = true;
-    switch (CAM_MODE) {
-    case VR_720P50:
-    case VR_720P60:
-    case VR_960x720P60:
-        is_720p60 = true;
-        Display_720P60_50(CAM_MODE, cam_4_3);
-        break;
-
-    case VR_540P90:
-    case VR_540P90_CROP:
-        is_720p60 = false;
-        Display_720P90(CAM_MODE);
-        break;
-
-    default:
-        perror("switch_to_video CaM_MODE error");
-    }
-
-    channel_osd_mode = CHANNEL_SHOWTIME;
-    osd_show(true);
-
-    lvgl_switch_to_720p();
-    draw_osd_clear();
-    lv_timer_handler();
-
-    Display_Osd(g_setting.record.osd);
-    g_setting.autoscan.last_source = SETTING_SOURCE_HDZERO;
-    ini_putl("autoscan", "last_source", g_setting.autoscan.last_source, SETTING_INI);
-}
-
 int scan_reinit(void) {
     lv_label_set_text(label, "Scanning ready");
     lv_bar_set_value(progressbar, 0, LV_ANIM_OFF);
@@ -392,9 +341,9 @@ void autoscan_exit(void) {
         LOGI("autoscan_exit, lelve=1");
         g_autoscan_exit = true;
         if (auto_scaned_cnt > 1)
-            g_menu_op = OPLEVEL_SUBMENU;
+            app_state_push(APP_STATE_SUBMENU);
         else
-            g_menu_op = OPLEVEL_MAINMENU;
+            app_state_push(APP_STATE_MAINMENU);
     }
 }
 
@@ -406,8 +355,8 @@ static void page_scannow_enter() {
         if (!g_autoscan_exit)
             g_autoscan_exit = true;
 
-        g_menu_op = OPLEVEL_VIDEO;
-        switch_to_video(false);
+        app_state_push(APP_STATE_VIDEO);
+        app_switch_to_hdzero(false);
     }
 
     if (auto_scaned_cnt == -1)
@@ -433,8 +382,8 @@ static void page_scannow_on_roller(uint8_t key) {
 }
 
 static void page_scannow_on_click(uint8_t key, int sel) {
-    g_menu_op = OPLEVEL_VIDEO;
-    switch_to_video(false);
+    app_state_push(APP_STATE_VIDEO);
+    app_switch_to_hdzero(false);
 }
 
 page_pack_t pp_scannow = {
@@ -443,4 +392,5 @@ page_pack_t pp_scannow = {
     .exit = page_scannow_exit,
     .on_roller = page_scannow_on_roller,
     .on_click = page_scannow_on_click,
+    .on_right_button = NULL,
 };

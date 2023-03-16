@@ -12,9 +12,12 @@
 #include <log/log.h>
 
 #include "common.hh"
+#include "core/app_state.h"
 #include "ui/page_common.h"
 #include "ui/ui_player.h"
 #include "ui/ui_style.h"
+#include "util/file.h"
+#include "util/math.h"
 
 LV_IMG_DECLARE(img_arrow1);
 
@@ -38,8 +41,7 @@ static lv_obj_t *page_playback_create(lv_obj_t *parent, panel_arr_t *arr) {
     create_text(NULL, section, false, "Playback:", LV_MENU_ITEM_BUILDER_VARIANT_2);
 
     lv_obj_t *cont = lv_obj_create(section);
-    lv_obj_set_size(cont, 1164, 700);
-    lv_obj_set_layout(cont, LV_LAYOUT_GRID);
+    lv_obj_set_size(cont, 1164, 760);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_style(cont, &style_context, LV_PART_MAIN);
 
@@ -75,6 +77,14 @@ static lv_obj_t *page_playback_create(lv_obj_t *parent, panel_arr_t *arr) {
                        pb_ui[pos].y + ITEM_PREVIEW_H + 10);
     }
 
+    lv_obj_t *label = lv_label_create(cont);
+    lv_label_set_text(label, "*Long press left button to exit\n**Long press right button to delete");
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_color(label, lv_color_make(255, 255, 255), 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(label, 10, 700);
+
     return page;
 }
 
@@ -109,17 +119,6 @@ static void show_pb_item(uint8_t pos, char *label) {
     lv_obj_clear_flag(pb_ui[pos]._img, LV_OBJ_FLAG_HIDDEN);
 }
 
-static int insert_to_list(char *fname, char *label, int size) {
-    media_file_node_t *pnode = &media_db.list[media_db.count];
-    strcpy(pnode->filename, fname);
-    strcpy(pnode->label, label);
-    pnode->size = size;
-
-    LOGI("%d: %s-%dMB", media_db.count, fname, size);
-    media_db.count++;
-    return 1;
-}
-
 int get_videofile_cnt() {
     return media_db.count;
 }
@@ -142,71 +141,118 @@ static bool get_seleteced(int seq, char *fname) {
     return true;
 }
 
-static int walk_sdcard() {
-    DIR *FD;
-    struct dirent *in_file;
-    FILE *entry_file;
-    int i, j, k, len;
-    char label[64], fname[128];
-    long int res;
+int hot_alphasort(const struct dirent **a, const struct dirent **b) {
+    const bool a_hot = strncmp((*a)->d_name, "hot_", 4) == 0;
+    const bool b_hot = strncmp((*b)->d_name, "hot_", 4) == 0;
+    if (a_hot && !b_hot) {
+        return -1;
+    }
+    if (!a_hot && b_hot) {
+        return 1;
+    }
+    return strcoll((*a)->d_name, (*b)->d_name);
+}
 
+static int walk_sdcard() {
     media_db.count = 0;
     media_db.cur_sel = 0;
 
-    /* Scanning the in directory */
-    if (NULL == (FD = opendir(MEDIA_FILES_DIR)))
+    struct dirent **namelist;
+    int count = scandir(MEDIA_FILES_DIR, &namelist, NULL, hot_alphasort);
+    if (count == -1) {
         return 0;
-
-    while ((in_file = readdir(FD))) {
-        if (!strcmp(in_file->d_name, "."))
-            continue;
-        if (!strcmp(in_file->d_name, ".."))
-            continue;
-
-        // .ts or .mp4 only
-        len = strlen(in_file->d_name);
-        for (i = len - 1; i > 0; i--) {
-            if (in_file->d_name[i] == '.')
-                break;
-        }
-        if (i == 0)
-            continue;
-
-        k = i; // save the '.' position
-
-        j = 0; // .TS and .MP4 only
-        while (i < len)
-            label[j++] = toupper(in_file->d_name[i++]);
-        label[j] = 0;
-        if ((strcmp(label, ".TS") != 0) && (strcmp(label, ".MP4") != 0))
-            continue;
-
-        strncpy(label, in_file->d_name, k);
-        label[k] = 0;
-
-        sprintf(fname, "%s/%s", MEDIA_FILES_DIR, in_file->d_name);
-        entry_file = fopen(fname, "r");
-        if (!entry_file)
-            continue;
-        fseek(entry_file, 0L, SEEK_END);
-        res = ftell(entry_file);
-        fclose(entry_file);
-        res >>= 20;  // in MB
-        if (res < 5) // skip small files
-            continue;
-
-        if (media_db.count < MAX_VIDEO_FILES)
-            insert_to_list(in_file->d_name, label, (int)res);
-        else
-            LOGI("max video file cnt reached %d,skipped", MAX_VIDEO_FILES);
     }
-    closedir(FD);
+
+    for (size_t i = 0; i < count; i++) {
+        struct dirent *in_file = namelist[i];
+        if (in_file->d_name[0] == '.') {
+            continue;
+        }
+
+        const char *dot = strrchr(in_file->d_name, '.');
+        if (dot == NULL) {
+            // '.' not found
+            continue;
+        }
+
+        if (strcasecmp(dot, ".ts") != 0 && strcasecmp(dot, ".mp4") != 0) {
+            continue;
+        }
+
+        char fname[128];
+        sprintf(fname, "%s/%s", MEDIA_FILES_DIR, in_file->d_name);
+
+        long size = file_get_size(fname);
+        size >>= 20; // in MB
+        if (size < 5) {
+            // skip small files
+            continue;
+        }
+
+        if (media_db.count >= MAX_VIDEO_FILES) {
+            LOGI("max video file cnt reached %d,skipped", MAX_VIDEO_FILES);
+            continue;
+        }
+
+        media_file_node_t *pnode = &media_db.list[media_db.count];
+        strcpy(pnode->filename, in_file->d_name);
+        strncpy(pnode->label, in_file->d_name, dot - in_file->d_name);
+        strcpy(pnode->ext, dot + 1);
+        pnode->size = size;
+
+        LOGI("%d: %s-%dMB", media_db.count, pnode->filename, size);
+
+        media_db.count++;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        free(namelist[i]);
+    }
+    free(namelist);
 
     // copy all thumbnail files to /tmp
+    char fname[128];
     sprintf(fname, "cp %s/*.jpg %s", MEDIA_FILES_DIR, TMP_DIR);
     system(fname);
 
     return media_db.count;
+}
+
+static int find_hot_index() {
+    DIR *fd = opendir(MEDIA_FILES_DIR);
+    if (!fd) {
+        return 1;
+    }
+
+    int result = 0;
+    struct dirent *in_file;
+    while ((in_file = readdir(fd))) {
+        if (in_file->d_name[0] == '.' || strncmp(in_file->d_name, "hot_", 4) != 0) {
+            continue;
+        }
+
+        const char *dot = strrchr(in_file->d_name, '.');
+        if (dot == NULL) {
+            // '.' not found
+            continue;
+        }
+
+        if (strcasecmp(dot, ".ts") != 0 && strcasecmp(dot, ".mp4") != 0) {
+            continue;
+        }
+
+        int index = 0;
+        if (sscanf(in_file->d_name, "hot_hdz_%d", &index) != 1) {
+            continue;
+        }
+
+        if (index > result) {
+            result = index;
+        }
+    }
+    closedir(fd);
+
+    return result + 1;
 }
 
 static void update_page() {
@@ -240,6 +286,49 @@ static void update_page() {
     }
 }
 
+static void mark_video_file(int seq) {
+    media_file_node_t *pnode = get_list(seq);
+    if (!pnode) {
+        return;
+    }
+    if (strncmp(pnode->filename, "hot_", 4) == 0) {
+        // file already marked hot
+        return;
+    }
+
+    const int index = find_hot_index();
+
+    char cmd[128];
+    sprintf(cmd, "mv  %s/%s %s/hot_hdz_%03d.%s", MEDIA_FILES_DIR, pnode->filename, MEDIA_FILES_DIR, index, pnode->ext);
+    system(cmd);
+    sprintf(cmd, "mv %s/%s.jpg %s/hot_hdz_%03d.jpg", MEDIA_FILES_DIR, pnode->label, MEDIA_FILES_DIR, index);
+    system(cmd);
+
+    walk_sdcard();
+    media_db.cur_sel = constrain(seq, 0, (media_db.count - 1));
+    update_page();
+}
+
+static void delete_video_file(int seq) {
+    media_file_node_t *pnode = get_list(seq);
+    if (!pnode) {
+        LOGE("delete_video_file failed. (PNODE ERROR)");
+        return;
+    }
+
+    char cmd[128];
+    sprintf(cmd, "rm %s/%s.*", MEDIA_FILES_DIR, pnode->label);
+
+    if (system(cmd) != -1) {
+        walk_sdcard();
+        media_db.cur_sel = constrain(seq, 0, (media_db.count - 1));
+        update_page();
+        LOGD("delete_video_file successful.");
+    } else {
+        LOGE("delete_video_file failed.");
+    }
+}
+
 static void page_playback_exit() {
     clear_videofile_cnt();
     update_page();
@@ -251,7 +340,7 @@ static void page_playback_enter() {
 
     if (ret == 0) {
         // no files found, back out
-        page_playback_exit();
+        submenu_exit();
     }
 }
 
@@ -269,7 +358,7 @@ void pb_key(uint8_t key) {
     if (state == 1) {
         if (mplayer_on_key(key)) {
             state = 0;
-            g_menu_op = OPLEVEL_SUBMENU;
+            app_state_push(APP_STATE_SUBMENU);
         }
         return;
     }
@@ -294,12 +383,20 @@ void pb_key(uint8_t key) {
         if (get_seleteced(media_db.cur_sel, fname)) {
             mplayer_file(fname);
             state = 1;
-            g_menu_op = OPLEVEL_PLAYBACK;
+            app_state_push(APP_STATE_PLAYBACK);
         }
         break;
 
     case DIAL_KEY_PRESS: // long press
         page_playback_exit();
+        break;
+
+    case RIGHT_KEY_CLICK:
+        mark_video_file(media_db.cur_sel);
+        break;
+
+    case RIGHT_KEY_PRESS:
+        delete_video_file(media_db.cur_sel);
         break;
     }
     done = true;
@@ -313,10 +410,15 @@ static void page_playback_on_click(uint8_t key, int sel) {
     pb_key(key);
 }
 
+static void page_playback_on_right_button(bool is_short) {
+    pb_key(is_short ? RIGHT_KEY_CLICK : RIGHT_KEY_PRESS);
+}
+
 page_pack_t pp_playback = {
     .create = page_playback_create,
     .enter = page_playback_enter,
     .exit = page_playback_exit,
     .on_roller = page_playback_on_roller,
     .on_click = page_playback_on_click,
+    .on_right_button = page_playback_on_right_button,
 };

@@ -6,10 +6,6 @@
 #include "ui/ui_attribute.h"
 
 ///////////////////////////////////////////////////////////////////////////////
-// global
-setting_t g_setting;
-
-op_level_t g_menu_op = OPLEVEL_MAINMENU;
 bool g_sdcard_enable = false;
 bool g_sdcard_det_req = false;
 int g_sdcard_size = 0;
@@ -17,8 +13,8 @@ bool g_autoscan_exit = true;
 bool g_scanning = false;
 bool g_showRXOSD = true;
 bool g_latency_locked = false;
-bool g_test_en = false;
 source_info_t g_source_info;
+
 /////////////////////////////////////////////////////////////////////////////
 
 LV_IMG_DECLARE(img_arrow);
@@ -166,6 +162,22 @@ lv_obj_t *create_label_item(lv_obj_t *parent, const char *name, int col, int row
     lv_obj_set_style_pad_top(label, 12, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_size(label, 320 * cols, 60);
+
+    lv_label_set_recolor(label, true);
+
+    lv_obj_set_grid_cell(label, LV_GRID_ALIGN_START, col, cols,
+                         LV_GRID_ALIGN_CENTER, row, 1);
+    return label;
+}
+
+lv_obj_t *create_info_item(lv_obj_t *parent, const char *name, int col, int row, int cols) {
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, name);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_pad_top(label, 12, 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_size(label, 320 * cols, 40);
 
     lv_label_set_recolor(label, true);
 

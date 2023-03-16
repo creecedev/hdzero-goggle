@@ -7,17 +7,20 @@
 #include <log/log.h>
 #include <minIni.h>
 
-#include "../core/elrs.h"
-#include "../core/esp32_flash.h"
-#include "../driver/dm5680.h"
-#include "../driver/esp32.h"
-#include "../driver/fans.h"
-#include "../driver/i2c.h"
-#include "../driver/uart.h"
 #include "common.hh"
+#include "core/elrs.h"
+#include "core/esp32_flash.h"
+#include "core/settings.h"
+#include "driver/dm5680.h"
+#include "driver/esp32.h"
+#include "driver/fans.h"
+#include "driver/gpio.h"
+#include "driver/i2c.h"
+#include "driver/uart.h"
 #include "ui/page_common.h"
 #include "ui/ui_main_menu.h"
 #include "ui/ui_style.h"
+#include "util/file.h"
 
 static lv_coord_t col_dsc[] = {160, 160, 160, 160, 160, 160, 160, LV_GRID_TEMPLATE_LAST};
 static lv_coord_t row_dsc[] = {60, 60, 60, 60, 60, 60, 60, 60, 60, 60, LV_GRID_TEMPLATE_LAST};
@@ -118,45 +121,49 @@ static bool flash_elrs() {
 }
 
 int generate_current_version(sys_version_t *sys_ver) {
-    char strline[128];
-    char strtmp[25];
-    memset(strtmp, 0, sizeof(strtmp));
     sys_ver->va = I2C_Read(ADDR_FPGA, 0xff);
-    sys_ver->app = 0;
     sys_ver->rx = rx_status[0].rx_ver;
 
     FILE *fp = fopen("/mnt/app/version", "r");
-    if (!fp)
-        goto err_open;
+    if (!fp) {
+        return -1;
+    }
+    fscanf(fp, "%d.%d.%d-%s",
+           &sys_ver->app_major,
+           &sys_ver->app_minor,
+           &sys_ver->app_patch,
+           &sys_ver->commit);
+    fclose(fp);
 
-    while (!feof(fp)) {
-        char *p = fgets(strline, sizeof(strline), fp);
-        if (!p)
-            goto err_fget;
+    if (strlen(sys_ver->commit)) {
+        LOGI("app: %d.%d.%d-%s rx: %d va: %d",
+             sys_ver->app_major,
+             sys_ver->app_minor,
+             sys_ver->app_patch,
+             sys_ver->commit,
+             sys_ver->rx, sys_ver->va);
 
-        if (strncmp(strline, "major", 5) == 0) {
-            strcat(strtmp, &strline[7]);
-            sys_ver->app = atoi(strtmp);
-            break;
-        }
-        LOGI(">>%s", strline);
+        sprintf(sys_ver->current, "app: %d.%d.%d-%s rx: %d va: %d",
+                sys_ver->app_major,
+                sys_ver->app_minor,
+                sys_ver->app_patch,
+                sys_ver->commit,
+                sys_ver->rx, sys_ver->va);
+    } else {
+        LOGI("app: %d.%d.%d rx: %d va: %d",
+             sys_ver->app_major,
+             sys_ver->app_minor,
+             sys_ver->app_patch,
+             sys_ver->rx, sys_ver->va);
+
+        sprintf(sys_ver->current, "app: %d.%d.%d rx: %d va: %d",
+                sys_ver->app_major,
+                sys_ver->app_minor,
+                sys_ver->app_patch,
+                sys_ver->rx, sys_ver->va);
     }
 
-    LOGI("va:%d, rx:%d, app:%d", sys_ver->va,
-         sys_ver->rx,
-         sys_ver->app);
-    fclose(fp);
-
-    sprintf(sys_ver->current, "%d.%d.%d",
-            sys_ver->app,
-            sys_ver->rx,
-            sys_ver->va);
     return 0;
-
-err_fget:
-    fclose(fp);
-err_open:
-    return -1;
 }
 
 static lv_obj_t *page_version_create(lv_obj_t *parent, panel_arr_t *arr) {
@@ -183,7 +190,7 @@ static lv_obj_t *page_version_create(lv_obj_t *parent, panel_arr_t *arr) {
     lv_obj_set_style_grid_row_dsc_array(cont, row_dsc, 0);
 
     create_select_item(arr, cont);
-    cur_ver_label = create_label_item(cont, "Current Version:", 1, 0, 2);
+    cur_ver_label = create_label_item(cont, "Current Version", 1, 0, 2);
 
     btn_vtx = create_label_item(cont, "Update VTX", 1, 1, 2);
     btn_goggle = create_label_item(cont, "Update Goggle", 1, 2, 2);
@@ -243,13 +250,12 @@ uint8_t command_monitor(char *cmd) {
     return ret;
 }
 
-static void elrs_version_timer(struct _lv_timer_t *timer)
-{
+static void elrs_version_timer(struct _lv_timer_t *timer) {
     char label[80];
     uint8_t version[32] = {0};
     uint16_t size = sizeof(version) - 1;
 
-    if(!msp_read_resposne(MSP_GET_BP_VERSION, &size, version)) {
+    if (!msp_read_resposne(MSP_GET_BP_VERSION, &size, version)) {
         msp_send_packet(MSP_GET_BP_VERSION, MSP_PACKET_COMMAND, 0, NULL);
         return;
     }
@@ -313,7 +319,7 @@ static void page_version_on_click(uint8_t key, int sel) {
 
         if (ret == 1) {
             if (file_compare("/tmp/HDZERO_TX.bin", "/tmp/HDZERO_TX_RB.bin")) {
-                lv_label_set_text(btn_vtx, "#000FF00 SUCCESS#");
+                lv_label_set_text(btn_vtx, "#00FF00 SUCCESS#");
             } else
                 lv_label_set_text(btn_vtx, "#FF0000 Verification failed, try it again#");
         } else if (ret == 2) {
@@ -321,8 +327,15 @@ static void page_version_on_click(uint8_t key, int sel) {
         } else {
             lv_label_set_text(btn_vtx, "#FF0000 Failed, check connection...#");
         }
+        lv_timer_handler();
+
         system("rm /tmp/HDZERO_TX.bin");
         system("rm /tmp/HDZERO_TX_RB.bin");
+
+        sleep(2);
+        beep();
+        sleep(2);
+
         lv_obj_add_flag(bar_vtx, LV_OBJ_FLAG_HIDDEN);
     } else if ((sel == 2) && !reboot_flag) {
         uint8_t ret = 0;
@@ -401,7 +414,7 @@ void update_current_version() {
         sys_version_t sys_version;
         generate_current_version(&sys_version);
         memset(strtmp, 0, sizeof(strtmp));
-        strcat(strtmp, "Current Version: ");
+        strcat(strtmp, "Current Version ");
         strcat(strtmp, sys_version.current);
         lv_label_set_text(cur_ver_label, strtmp);
         bInit = false;
@@ -516,4 +529,5 @@ page_pack_t pp_version = {
     .exit = NULL,
     .on_roller = page_version_on_roller,
     .on_click = page_version_on_click,
+    .on_right_button = NULL,
 };

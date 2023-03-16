@@ -1,270 +1,269 @@
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
-#include <math.h>
-#include <memory.h>
+#include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <log/log.h>
+#include <minIni.h>
 
+#include "MadgwickAHRS.h"
 #include "common.hh"
+#include "elrs.h"
 #include "ht.h"
 #include "osd.h"
-#include "MadgwickAHRS.h"
-#include "../bmi270/accel_gyro.h"
-#include "../driver/hardware.h"
-#include "../driver/dm6302.h"
-#include "../driver/oled.h"
+
+#include "bmi270/accel_gyro.h"
+#include "core/settings.h"
+#include "driver/dm6302.h"
+#include "driver/gpio.h"
+#include "driver/hardware.h"
+#include "driver/oled.h"
 #include "ui/page_common.h"
-#include "ui/page_scannow.h"
+#include "util/math.h"
 
+// #define FAST_SIM
+typedef enum {
+    OLED_MD_DETECTING, // regular operation, oled on
+    OLED_MD_PRE_OFF,   // pre-sleep, reduced brightness
+    OLED_MD_OFF        // sleep, oled off
+} oled_motion_detect_state_t;
 
-//#define FAST_SIM
 ///////////////////////////////////////////////////////////////////////////////
 // local
 static ht_data_t ht_data;
-static uint8_t frame_period = 10;
-static uint8_t sync_len = 200;
+static const uint8_t frame_period = 10;
+static const uint8_t sync_len = 200;
 
+static bool has_motion_data = false;
+static bool is_moving = true;
+
+static volatile bool calibrating = false;
+static int calibration_count = 0;
+
+static const float imu_orientation[3] = {0.0 * DEG_TO_RAD, -90.0 * DEG_TO_RAD, (-90.0 + 23.0) * DEG_TO_RAD};
+
+static const int ppmMaxPulse = 500;
+static const int ppmMinPulse = -500;
+static const int ppmCenter = 1500;
+
+static void calculate_orientation();
 
 ///////////////////////////////////////////////////////////////////////////////
-//no motion to disable OLED display
-void detect_motion(int is_moving)
-{
-    static uint8_t state = 0;  //0: detecting motion, 1=oled pre off mode, 2= oled off mode
-	static int cnt = 0;
+// no motion to disable OLED display
+static void detect_motion(bool is_moving) {
+    static oled_motion_detect_state_t state = OLED_MD_DETECTING;
+    static int cnt = 0;
 
-    if(state == 0) { //in moving 
-        if(is_moving) 
+    switch (state) {
+    case OLED_MD_DETECTING:
+        if (g_setting.image.auto_off == 3) {
+            // auto_off disabled, bail
+            break;
+        }
+        if (is_moving) {
+            // moving, bail
             cnt = 0;
-        else {
-            cnt++;
-            if(g_setting.image.auto_off != 3) {
-            #ifdef FAST_SIM
-                if(cnt > (MOVTION_DUR_1MINUTE*(g_setting.image.auto_off+1))) { 
-            #else    
-                if(cnt > (MOVTION_DUR_1MINUTE*(g_setting.image.auto_off*2+3))) {
-            #endif        
-                    state = 1;
-                    cnt = 0;
-                    LOGI("OLED pre-OFF for protection.");
-                    OLED_Brightness(0);
-                }
-            }
-        #ifdef FAST_SIM
-            LOGI("IDLE %d",cnt);
-        #endif
-        }    
-    }
-    else if(state == 1) { //pre -off
-    #ifdef FAST_SIM    
-        LOGI("PRE OFF %d",cnt);
-    #endif    
-        if(is_moving) {
-            state = 0;
+            break;
+        }
+
+        cnt++;
+
+#ifdef FAST_SIM
+        if (cnt > (MOTION_DUR_1MINUTE * (g_setting.image.auto_off + 1))) {
+#else
+        if (cnt > (MOTION_DUR_1MINUTE * (g_setting.image.auto_off * 2 + 3))) {
+#endif
+            LOGI("OLED pre-OFF for protection.");
+            OLED_Brightness(0);
+            state = OLED_MD_PRE_OFF;
             cnt = 0;
+        }
+#ifdef FAST_SIM
+        LOGI("IDLE %d", cnt);
+#endif
+        break;
+
+    case OLED_MD_PRE_OFF:
+#ifdef FAST_SIM
+        LOGI("PRE OFF %d", cnt);
+#endif
+        if (is_moving) {
+            // we got motion, turn oled back on, start over
             OLED_Brightness(g_setting.image.oled);
+            state = OLED_MD_DETECTING;
+            cnt = 0;
         }
-        else {
-            cnt++;
-            if(cnt == MOVTION_DUR_1MINUTE) { // 1-min
-                LOGI("OLED OFF for protection.");
-                beep(); 
-                
-                OLED_ON(0); //Turn off OLED
 
-                if(g_hw_stat.source_mode ==1) 
-                    HDZero_Close(); //Turn off RF
+        cnt++;
 
-                state = 2;
-                cnt = 0;
+        if (cnt == MOTION_DUR_1MINUTE) { // 1-min
+            LOGI("OLED OFF for protection.");
+            beep();
+
+            OLED_ON(0); // Turn off OLED
+            if (g_hw_stat.source_mode == HW_SRC_MODE_HDZERO) {
+                HDZero_Close(); // Turn off RF
             }
+
+            state = OLED_MD_OFF;
+            cnt = 0;
         }
-    }
-    else { // in stationery 
-    #ifdef FAST_SIM
-        LOGI("OFF %d",cnt);
-    #endif    
-        if(is_moving) {
-            cnt++;
-            if(cnt == 2) {
-                state = 0;
-                cnt = 0;
-                if(g_hw_stat.source_mode ==1) {
-                    HDZero_open();
-                    uint8_t ch = g_setting.scan.channel - 1;
-	                DM6302_SetChannel(ch);
-                }
-                LOGI("OLED ON from protection.");
-                OLED_Brightness(g_setting.image.oled);
-                OLED_ON(1); 
+        break;
+
+    case OLED_MD_OFF:
+#ifdef FAST_SIM
+        LOGI("OFF %d", cnt);
+#endif
+        if (!is_moving) {
+            // no motion, stay off
+            cnt = 0;
+            break;
+        }
+
+        cnt++;
+
+        if (cnt == 2) {
+            if (g_hw_stat.source_mode == HW_SRC_MODE_HDZERO) {
+                HDZero_open();
+                uint8_t ch = g_setting.scan.channel - 1;
+                DM6302_SetChannel(ch);
             }
+            LOGI("OLED ON from protection.");
+            OLED_Brightness(g_setting.image.oled);
+            OLED_ON(1);
+            state = OLED_MD_DETECTING;
+            cnt = 0;
         }
-        else {
-            if(cnt) cnt = 0;
-        }
+        break;
+
+    default:
+        // wat?
+        state = OLED_MD_DETECTING;
+        break;
     }
 }
 
-void get_imu_data(int bCalcDiff)
-{
-    static int dec_cnt;
-    static struct bmi2_sens_axes_data gyr_last;
-    int16_t  dx,dy,dz;
-    uint32_t diff;
-    int  is_moving;
-    
-    dec_cnt++;
-    if(dec_cnt != 10) return;  //calibrate dec_cnt to make sure the following code runs at 1Hz
-    dec_cnt = 0;
+void ht_detect_motion() {
+    if (has_motion_data) {
+        detect_motion(is_moving);
+        has_motion_data = false;
+    }
+}
+
+static void get_imu_data() {
+    static int dec_cnt = 0;
 
     get_bmi270(&ht_data.sensor_data);
 
-    if(bCalcDiff) {
-        dx = ht_data.sensor_data.gyr.x - gyr_last.x;
-        dy = ht_data.sensor_data.gyr.y - gyr_last.y;
-        dz = ht_data.sensor_data.gyr.z - gyr_last.z;
-        diff = dx*dx+dy*dy+dz*dz;
-        is_moving = (diff > MOVTION_GYRO_THR) | g_key;
-        
-        g_key = 0;
-        gyr_last = ht_data.sensor_data.gyr;    
-        
-        //if(is_moving)
-        //    LOGI("IMU: %d",diff);
-       
-        detect_motion(is_moving);
-    }
+    dec_cnt++;
+    if (dec_cnt != AHRS_UPDATE_FREQUENCY)
+        return; // calibrate dec_cnt to make sure the following code runs at 1Hz
+    dec_cnt = 0;
+
+    static struct bmi2_sens_axes_data gyr_last;
+
+    const int16_t dx = ht_data.sensor_data.gyr.x - gyr_last.x;
+    const int16_t dy = ht_data.sensor_data.gyr.y - gyr_last.y;
+    const int16_t dz = ht_data.sensor_data.gyr.z - gyr_last.z;
+    const uint32_t diff = dx * dx + dy * dy + dz * dz;
+
+    is_moving = (diff > MOTION_GYRO_THR) || g_key > 0;
+    // LOGD("diff: %d g_key: %d is_moving: %d", diff, g_key, is_moving);
+
+    g_key = 0;
+    gyr_last = ht_data.sensor_data.gyr;
+
+    has_motion_data = true;
 }
 
+static void timer_callback_imu(union sigval timer_data) {
+    get_imu_data();
+    calculate_orientation();
+}
 
 /////////////////////////////////////////////////////////////////////////////////
-//HT function
-void init_ht()
-{
-    ht_data.tiltAngle = 0;      
-    ht_data.tiltAngleLP = 0;    
+// HT function
+void ht_init() {
+    ht_data.tiltAngle = 0;
+    ht_data.rollAngle = 0;
+    ht_data.panAngle = 0;
 
-    ht_data.rollAngle = 0;       
-    ht_data.rollAngleLP = 0;    
-
-    ht_data.panAngle = 0;       
-    ht_data.panAngleLP = 0;     
-
-    ht_data.tiltRollBeta = 0.75;
-    ht_data.panBeta = 0.75; 
-    
-    ht_data.tiltInverse = -1; 
-    ht_data.rollInverse = -1; 
-    ht_data.panInverse = -1; 
-
-    ht_data.tiltFactor = 17;
-    ht_data.rollFactor = 17;
-    ht_data.panFactor = 17;
-    
-    ht_data.tiltMaxPulse = 500;
-    ht_data.tiltMinPulse = -500; 
-    ht_data.tiltCenter = 1500; 
-    ht_data.panMaxPulse = 500;
-    ht_data.panMinPulse = -500; 
-    ht_data.panCenter = 1500; 
-    ht_data.rollMaxPulse = 500;
-    ht_data.rollMinPulse = -500; 
-    ht_data.rollCenter = 1500; 
+    ht_data.tiltInverse = 1;
+    ht_data.rollInverse = -1;
+    ht_data.panInverse = -1;
 
     ht_data.htChannels[0] = 0;
     ht_data.htChannels[1] = 0;
     ht_data.htChannels[2] = 0;
-    
-    ht_data.is_calibrated = 0;
+
     ht_data.enable = 0;
+    ht_set_maxangle(g_setting.ht.max_angle);
+    ht_data.acc_offset[0] = g_setting.ht.acc_x;
+    ht_data.acc_offset[1] = g_setting.ht.acc_y;
+    ht_data.acc_offset[2] = g_setting.ht.acc_z;
+    ht_data.gyr_offset[0] = g_setting.ht.gyr_x;
+    ht_data.gyr_offset[1] = g_setting.ht.gyr_y;
+    ht_data.gyr_offset[2] = g_setting.ht.gyr_z;
+
+    // start timer
+    timer_t timerId = 0;
+    struct sigevent sev = {0};
+    struct itimerspec its = {.it_value.tv_sec = 1,
+                             .it_value.tv_nsec = 0,
+                             .it_interval.tv_sec = 0,
+                             .it_interval.tv_nsec = 1000000000 / AHRS_UPDATE_FREQUENCY};
+
+    sev.sigev_notify = SIGEV_THREAD;
+    sev.sigev_notify_function = &timer_callback_imu;
+
+    int res = timer_create(CLOCK_REALTIME, &sev, &timerId);
+    if (res != 0) {
+        LOGE("Error timer_create: %s\n", strerror(errno));
+        return;
+    }
+
+    res = timer_settime(timerId, 0, &its, NULL);
+    if (res != 0) {
+        LOGE("Error timer_settime: %s\n", strerror(errno));
+    }
 }
 
-static void calc_gyr(float* gyrAngle) //in degree
+void ht_set_maxangle(int angle) {
+    ht_data.tiltFactor = 1000.0 / angle;
+    ht_data.rollFactor = 1000.0 / angle;
+    ht_data.panFactor = 1000.0 / angle;
+}
+
+static void calc_gyr(float *gyrAngle) // in degree
 {
+    // convert gyro readings to degrees/sec (with calibration offsets)
     gyrAngle[0] = gyr_to_dps(ht_data.sensor_data.gyr.x - ht_data.gyr_offset[0]);
     gyrAngle[1] = gyr_to_dps(ht_data.sensor_data.gyr.y - ht_data.gyr_offset[1]);
     gyrAngle[2] = gyr_to_dps(ht_data.sensor_data.gyr.z - ht_data.gyr_offset[2]);
+    rotate(gyrAngle, imu_orientation);
 }
 
-static void calc_acc(float* accAngle) //in G
+static void calc_acc(float *accAngle) // in G
 {
-    accAngle[0] = acc_to_g(ht_data.sensor_data.acc.x - ht_data.acc_offset[0]); 
-
-    accAngle[1] = acc_to_g(ht_data.sensor_data.acc.y - ht_data.acc_offset[1]);
-
-    accAngle[2] = acc_to_g(ht_data.sensor_data.acc.z - ht_data.acc_offset[2]);
+    // convert accelerometer readings to G forces
+    accAngle[0] = acc_to_g(ht_data.sensor_data.acc.x);
+    accAngle[1] = acc_to_g(ht_data.sensor_data.acc.y);
+    accAngle[2] = acc_to_g(ht_data.sensor_data.acc.z);
+    rotate(accAngle, imu_orientation);
 }
 
-static void iir_filter(float beta,float in, float* out)
-{
-    *out = in*beta + (*out)*(1 - beta);
-}
-
-// Normalizes any number to an arbitrary range
-// by assuming the range wraps around when going below min or above max
-float normalize(float value, float start, float end)
-{
-  float width = end - start;          //
-  float offsetValue = value - start;  // value relative to 0
-
-  return (offsetValue - (floor(offsetValue / width) * width)) + start;
-  // + start to reset back to start of original range
-}
-
-// Rotate, in Order X -> Y -> Z
-void rotate(float pn[3], const float rotation[3])
-{
-  float rot[3] = {0, 0, 0};
-  memcpy(rot, rotation, sizeof(rot[0]) * 3);
-
-  // Passed in Degrees
-  rot[0] *= DEG_TO_RAD;
-  rot[1] *= DEG_TO_RAD;
-  rot[2] *= DEG_TO_RAD;
-
-  float out[3];
-
-  // X Rotation
-  if (rotation[0] != 0) {
-    out[0] = pn[0] * 1 + pn[1] * 0 + pn[2] * 0;
-    out[1] = pn[0] * 0 + pn[1] * cos(rot[0]) - pn[2] * sin(rot[0]);
-    out[2] = pn[0] * 0 + pn[1] * sin(rot[0]) + pn[2] * cos(rot[0]);
-    memcpy(pn, out, sizeof(out[0]) * 3);
-  }
-
-  // Y Rotation
-  if (rotation[1] != 0) {
-    out[0] = pn[0] * cos(rot[1]) - pn[1] * 0 + pn[2] * sin(rot[1]);
-    out[1] = pn[0] * 0 + pn[1] * 1 + pn[2] * 0;
-    out[2] = -pn[0] * sin(rot[1]) + pn[1] * 0 + pn[2] * cos(rot[1]);
-    memcpy(pn, out, sizeof(out[0]) * 3);
-  }
-
-  // Z Rotation
-  if (rotation[2] != 0) {
-    out[0] = pn[0] * cos(rot[2]) - pn[1] * sin(rot[2]) + pn[2] * 0;
-    out[1] = pn[0] * sin(rot[2]) + pn[1] * cos(rot[2]) + pn[2] * 0;
-    out[2] = pn[0] * 0 + pn[1] * 0 + pn[2] * 1;
-    memcpy(pn, out, sizeof(out[0]) * 3);
-  }
-}
-
-void calibrate_ht()
-{
-    uint16_t i;
-    float accAngle[3];
-
+void ht_calibrate() {
     LOGI("HT calibration...");
     ht_data.acc_offset[0] = ht_data.acc_offset[1] = ht_data.acc_offset[2] = 0;
     ht_data.gyr_offset[0] = ht_data.gyr_offset[1] = ht_data.gyr_offset[2] = 0;
 
-    for (i = 0; i < (1<<CALIBRATION_BCNT); i++) {
-        get_imu_data(false); usleep(100000); //0.1s
-        ht_data.acc_offset[0] += ht_data.sensor_data.acc.x;
-        ht_data.acc_offset[1] += ht_data.sensor_data.acc.y;
-        ht_data.acc_offset[2] += ht_data.sensor_data.acc.z;
-        ht_data.gyr_offset[0] += ht_data.sensor_data.gyr.x;
-        ht_data.gyr_offset[1] += ht_data.sensor_data.gyr.y;
-        ht_data.gyr_offset[2] += ht_data.sensor_data.gyr.z;
+    calibration_count = 0;
+    calibrating = true;
+    // Check if finished calibrating
+    while (calibrating) {
+        usleep(100000);
     }
     ht_data.acc_offset[0] >>= CALIBRATION_BCNT;
     ht_data.acc_offset[1] >>= CALIBRATION_BCNT;
@@ -273,63 +272,84 @@ void calibrate_ht()
     ht_data.gyr_offset[1] >>= CALIBRATION_BCNT;
     ht_data.gyr_offset[2] >>= CALIBRATION_BCNT;
 
+    ini_putl("ht", "acc_x", ht_data.acc_offset[0], SETTING_INI);
+    ini_putl("ht", "acc_y", ht_data.acc_offset[1], SETTING_INI);
+    ini_putl("ht", "acc_z", ht_data.acc_offset[2], SETTING_INI);
+    ini_putl("ht", "gyr_x", ht_data.gyr_offset[0], SETTING_INI);
+    ini_putl("ht", "gyr_y", ht_data.gyr_offset[1], SETTING_INI);
+    ini_putl("ht", "gyr_z", ht_data.gyr_offset[2], SETTING_INI);
+
     LOGI("done!");
 }
 
-int calc_ht()
-{
-    float gyrAngle[3],accAngle[3],tmp;
+static void calculate_orientation() {
+    float gyrAngle[3], accAngle[3];
+    float tmp;
 
-    if(!ht_data.enable) return 0;
-/*
+    if (!calibrating && !ht_data.enable)
+        return;
+
+    if (calibrating) {
+        ht_data.acc_offset[0] += ht_data.sensor_data.acc.x;
+        ht_data.acc_offset[1] += ht_data.sensor_data.acc.y;
+        ht_data.acc_offset[2] += ht_data.sensor_data.acc.z;
+        ht_data.gyr_offset[0] += ht_data.sensor_data.gyr.x;
+        ht_data.gyr_offset[1] += ht_data.sensor_data.gyr.y;
+        ht_data.gyr_offset[2] += ht_data.sensor_data.gyr.z;
+        calibration_count++;
+        if (calibration_count == 1 << CALIBRATION_BCNT)
+            calibrating = false;
+    }
+
     calc_gyr(gyrAngle);
     calc_acc(accAngle);
+    // LOGI("ACC=%.2f,%.2f,%.2f\tGYR=%.2f,%.2f,%.2f", accAngle[0], accAngle[1], accAngle[2],
+    //     gyrAngle[0], gyrAngle[1], gyrAngle[2]);
 
-	MadgwickAHRSupdate(gyrAngle[0] * DEG_TO_RAD, gyrAngle[1] * DEG_TO_RAD, gyrAngle[2] * DEG_TO_RAD, \
-					   accAngle[0],              accAngle[1],              accAngle[2], \
-						0,0,0);
-	
-	ht_data.rollAngle = getPitch(); //getRoll();
-	ht_data.tiltAngle = getRoll();  //getPitch();
-	ht_data.panAngle = getYaw();
+    MadgwickAHRSupdateIMU(gyrAngle[0] * DEG_TO_RAD, gyrAngle[1] * DEG_TO_RAD, gyrAngle[2] * DEG_TO_RAD,
+                          accAngle[0], accAngle[1], accAngle[2]);
 
-    iir_filter(ht_data.tiltRollBeta,ht_data.tiltAngle, &ht_data.tiltAngleLP);
-    iir_filter(ht_data.tiltRollBeta,ht_data.rollAngle, &ht_data.rollAngleLP);
-    iir_filter(ht_data.panBeta, normalize(ht_data.panAngle, -180,180), &ht_data.panAngleLP);
+    // Adjust PTR relatice to user specified home position
+    ht_data.panAngle = getYaw() - ht_data.panAngleHome;
+    ht_data.tiltAngle = getPitch() - ht_data.tiltAngleHome;
+    ht_data.rollAngle = getRoll() - ht_data.rollAngleHome;
 
-	LOGI("PTR=%.2f,%.2f,%.2f", ht_data.panAngleLP, ht_data.tiltAngleLP, ht_data.rollAngleLP);
+    tmp = normalize(ht_data.panAngle, -180.0, 180.0) * ht_data.panInverse * ht_data.panFactor + 0.5;
+    ht_data.htChannels[0] = constrain(tmp, ppmMinPulse, ppmMaxPulse) + ppmCenter;
 
+    tmp = normalize(ht_data.tiltAngle, -180.0, 180.0) * ht_data.tiltInverse * ht_data.tiltFactor + 0.5;
+    ht_data.htChannels[1] = constrain(tmp, ppmMinPulse, ppmMaxPulse) + ppmCenter;
 
-    tmp = ht_data.panAngleLP * ht_data.panInverse * ht_data.panFactor;
-    if ((tmp > -ht_data.panMinPulse) && (tmp < ht_data.panMaxPulse)) {
-        tmp += ht_data.panCenter;
-        ht_data.htChannels[0] = (int16_t)tmp;
-    }    
+    tmp = normalize(ht_data.rollAngle, -180.0, 180.0) * ht_data.rollInverse * ht_data.rollFactor + 0.5;
+    ht_data.htChannels[2] = constrain(tmp, ppmMinPulse, ppmMaxPulse) + ppmCenter;
 
-    tmp = ht_data.tiltAngleLP * ht_data.tiltInverse * ht_data.tiltFactor;
-    if((tmp > ht_data.tiltMinPulse) && (tmp < ht_data.tiltMaxPulse)) {
-        tmp += ht_data.tiltCenter;
-        ht_data.htChannels[1] = (int16_t)tmp;
+    Set_HT_dat(ht_data.htChannels[0], ht_data.htChannels[1], ht_data.htChannels[2]);
+
+    if (elrs_headtracking_enabled()) {
+        uint16_t ptrCRSF[3];
+        ptrCRSF[0] = fmap(ht_data.htChannels[0], ppmMinPulse + ppmCenter, ppmMaxPulse + ppmCenter, 191.0, 1792.0) + 0.5;
+        ptrCRSF[1] = fmap(ht_data.htChannels[1], ppmMinPulse + ppmCenter, ppmMaxPulse + ppmCenter, 191.0, 1792.0) + 0.5;
+        ptrCRSF[2] = fmap(ht_data.htChannels[2], ppmMinPulse + ppmCenter, ppmMaxPulse + ppmCenter, 191.0, 1792.0) + 0.5;
+        msp_ht_update(ptrCRSF[0], ptrCRSF[1], ptrCRSF[2]);
     }
-
-    tmp = ht_data.rollAngleLP * ht_data.rollInverse * ht_data.rollFactor;
-    if((tmp > ht_data.rollMinPulse) && (tmp < ht_data.rollMaxPulse)) {
-        tmp += ht_data.rollCenter;
-        ht_data.htChannels[2] = (int16_t)tmp;
-    }
-*/
-    //Set_HT_dat(1500, 1500, 1500);
-	return 1;
 }
 
-void enable_ht()
-{
+void ht_set_center_position() {
+    ht_data.panAngleHome += ht_data.panAngle;
+    ht_data.tiltAngleHome += ht_data.tiltAngle;
+    ht_data.rollAngleHome += ht_data.rollAngle;
+}
+
+void ht_enable() {
     ht_data.enable = 1;
     Set_HT_status(ht_data.enable, frame_period, sync_len);
 }
 
-void disable_ht()
-{
+void ht_disable() {
     ht_data.enable = 0;
     Set_HT_status(ht_data.enable, frame_period, sync_len);
+}
+
+int16_t *ht_get_channels() {
+    return ht_data.htChannels;
 }

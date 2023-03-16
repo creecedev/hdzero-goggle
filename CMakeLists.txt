@@ -4,7 +4,17 @@ project(HDZGOGGLE VERSION 1.1)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(CMAKE_C_FLAGS "-mfpu=neon -mfloat-abi=hard -Wno-unused-function -Wno-unused-variable -ffunction-sections -fdata-sections -Wl,-gc-sections -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64")
+set(CMAKE_CXX_FLAGS "-mfpu=neon -mfloat-abi=hard -Wno-unused-function -Wno-unused-variable -ffunction-sections -fdata-sections -Wl,-gc-sections -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64")
+
+set(CMAKE_C_FLAGS_DEBUG "-g")
+set(CMAKE_CXX_FLAGS_DEBUG "-g")
+
+set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
 set(OS_APP_PATH ${PROJECT_SOURCE_DIR}/mkapp/app/app)
+set(RECORD_APP_PATH ${PROJECT_SOURCE_DIR}/mkapp/app/app/record)
 
 # common build settings
 set(STANDARD_LIBRARIES
@@ -16,16 +26,7 @@ set(STANDARD_LIBRARIES
 	rt
 	stdc++
 )
-set(COMMON_COMPILE_OPTIONS
-	-O3
-	-mfpu=neon
-	-mfloat-abi=hard
-	-Wno-unused-function
-	-Wno-unused-variable
-	-ffunction-sections
-	-fdata-sections 
-	-Wl,-gc-sections
-)
+
 add_definitions(
 	-DAWCHIP=AW_V5 
 	-D_GNU_SOURCE 
@@ -38,8 +39,9 @@ add_subdirectory(lib/minIni)
 add_subdirectory(lib/log)
 add_subdirectory(lib/esp-loader)
 add_subdirectory(lib/softwinner)
+add_subdirectory(lib/ffmpeg)
 
-# application
+# main application
 file(GLOB SRC_FILES_CORE   "src/core/*.c" "src/core/*.h")
 file(GLOB SRC_FILES_DRIVER "src/driver/*.c" "src/driver/*.h")
 file(GLOB SRC_FILES_IMAGE  "src/image/*.c" "src/image/*.h")
@@ -47,6 +49,7 @@ file(GLOB SRC_FILES_UI   "src/ui/*.c" "src/ui/*.h")
 file(GLOB SRC_FILES_BMI   "src/bmi270/*.c" "src/bmi270/*.h")
 file(GLOB SRC_FILES_WINDOW "src/window/*.c" "src/window/*.h")
 file(GLOB SRC_FILES_PLAYER "src/player/*.c" "src/player/*.h")
+file(GLOB SRC_FILES_UTIL "src/util/*.c" "src/util/*.h")
 
 add_executable(${PROJECT_NAME}
 	${SRC_FILES_CORE}
@@ -56,8 +59,8 @@ add_executable(${PROJECT_NAME}
 	${SRC_FILES_BMI}
 	${SRC_FILES_WINDOW}
 	${SRC_FILES_PLAYER}
+	${SRC_FILES_UTIL}
 )
-target_compile_options(${PROJECT_NAME} PRIVATE ${COMMON_COMPILE_OPTIONS})
 target_include_directories(${PROJECT_NAME} PRIVATE 
 	src/
 	src/core
@@ -79,13 +82,40 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 	softwinner
 )
 
+# record application
+file(GLOB SRC_FILES_RECORD   "src/record/*.c" "src/record/*.h")
+
+add_executable(record
+	${SRC_FILES_RECORD}
+)
+target_include_directories(record PRIVATE 
+	src/record
+
+	lib/linux/include
+	lib/linux/include/video
+	lib/linux/include/media
+)
+target_link_libraries(record PRIVATE
+	${STANDARD_LIBRARIES}
+
+	log
+	ffmpeg
+	minIni
+	softwinner
+)
+
 # image build
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD 
+add_custom_command(
+	OUTPUT ${PROJECT_SOURCE_DIR}/out/${PROJECT_NAME}
 	COMMAND size -A ${PROJECT_NAME}
 	COMMAND mkdir -p ${PROJECT_SOURCE_DIR}/out/
 	COMMAND cp ${PROJECT_NAME} ${PROJECT_SOURCE_DIR}/out/
+	COMMAND cp record ${PROJECT_SOURCE_DIR}/out/
 	COMMAND cp ${PROJECT_NAME} ${OS_APP_PATH}
-	COMMAND cd ${PROJECT_SOURCE_DIR}/mkapp && rm -f ./ota_app/hdzgoggle_app_ota*.tar && ./mkapp_ota.sh && ./make_fw.sh
-	COMMAND mv ${PROJECT_SOURCE_DIR}/mkapp/HDZERO_GOGGLE-*.bin ${PROJECT_SOURCE_DIR}/out/
+	COMMAND cp record ${RECORD_APP_PATH}
+	COMMAND cd ${PROJECT_SOURCE_DIR} && ./mkapp/mkapp_ota.sh
+	DEPENDS ${PROJECT_NAME} record
 )
-
+add_custom_target(${PROJECT_NAME}-OTA ALL
+  DEPENDS ${PROJECT_SOURCE_DIR}/out/${PROJECT_NAME}
+)

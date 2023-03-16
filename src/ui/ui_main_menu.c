@@ -6,6 +6,7 @@
 #include <lvgl/lvgl.h>
 
 #include "common.hh"
+#include "core/app_state.h"
 #include "driver/hardware.h"
 #include "driver/mcp3021.h"
 #include "driver/oled.h"
@@ -90,6 +91,18 @@ void submenu_enter(void) {
     }
 }
 
+void submenu_right_button(bool is_short) {
+    page_pack_t *pp = find_pp(lv_menu_get_cur_main_page(menu));
+    if (!pp) {
+        return;
+    }
+
+    if (pp->on_right_button) {
+        // if your page has a right_button event handler, call it
+        pp->on_right_button(is_short);
+    }
+}
+
 void submenu_roller(uint8_t key) {
     page_pack_t *pp = find_pp(lv_menu_get_cur_main_page(menu));
     if (!pp) {
@@ -120,7 +133,7 @@ void submenu_roller(uint8_t key) {
 
 void submenu_exit() {
     LOGI("submenu_exit");
-    g_menu_op = OPLEVEL_MAINMENU;
+    app_state_push(APP_STATE_MAINMENU);
 
     page_pack_t *pp = find_pp(lv_menu_get_cur_main_page(menu));
     if (!pp) {
@@ -192,7 +205,7 @@ static void menu_reinit(void) {
     }
 }
 
-bool main_menu_isshow(void) {
+bool main_menu_is_shown(void) {
     return !lv_obj_has_flag(menu, LV_OBJ_FLAG_HIDDEN);
 }
 

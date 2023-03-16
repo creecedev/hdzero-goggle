@@ -54,78 +54,6 @@
 #define DEF_VIDEOICON   "videoicon.jpg"
 #define FOCUS_CHART_IMG "focus_chart.png"
 
-typedef struct {
-    uint8_t top_speed;
-    bool auto_mode;
-    uint8_t left_speed;
-    uint8_t right_speed;
-} setting_fan_t;
-
-typedef struct {
-    int channel;
-} setting_scan_t;
-
-typedef enum {
-    SETTING_AUTOSCAN_SCAN = 0,
-    SETTING_AUTOSCAN_LAST = 1,
-    SETTING_AUTOSCAN_MENU = 2
-} setting_status_t;
-
-typedef enum {
-    SETTING_SOURCE_LAST = 0,
-    SETTING_SOURCE_HDZERO = 1,
-    SETTING_SOURCE_EXPANSION = 2,
-    SETTING_SOURCE_AV_IN = 3,
-    SETTING_SOURCE_HDMI_IN = 4
-} setting_source_t;
-
-typedef struct {
-    setting_status_t status;
-    setting_source_t last_source;
-    setting_source_t source;
-} setting_autoscan_t;
-
-typedef struct {
-    int voltage;
-    bool display_voltage;
-    int warning_type; // 0=beep,1=visual,2=both
-} setting_power_t;
-
-typedef struct {
-    bool mode_manual;
-    bool format_ts;
-    bool osd;
-    bool audio;
-    int audio_source; // 0=MIC,1=Line in,2=AV in
-} setting_record_t;
-
-typedef struct {
-    uint8_t oled;
-    uint8_t brightness;
-    uint8_t saturation;
-    uint8_t contrast;
-    uint8_t auto_off; // 0=3min,1=4min,2=5min,3=never,
-} setting_image_t;
-
-typedef struct {
-    int enable;
-} head_tracker_t;
-
-typedef struct {
-    int enable;
-} elrs_t;
-
-typedef struct {
-    setting_scan_t scan;
-    setting_fan_t fans;
-    setting_autoscan_t autoscan;
-    setting_power_t power;
-    setting_record_t record;
-    setting_image_t image;
-    head_tracker_t ht;
-    elrs_t elrs;
-} setting_t;
-
 typedef enum {
     SOURCE_HDZERO = 0,
     SOURCE_HDMI_IN = 1,
@@ -183,8 +111,6 @@ enum {
 };
 typedef uint8_t lv_menu_builder_variant_t;
 
-extern setting_t g_setting;
-extern op_level_t g_menu_op;
 extern bool g_sdcard_enable;
 extern bool g_sdcard_det_req;
 extern int g_sdcard_size;
@@ -192,7 +118,6 @@ extern bool g_autoscan_exit;
 extern bool g_scanning;
 extern bool g_showRXOSD;
 extern bool g_latency_locked;
-extern bool g_test_en;
 extern source_info_t g_source_info;
 
 int create_text(struct menu_obj_s *s, lv_obj_t *parent, bool is_icon, const char *txt,
@@ -203,6 +128,8 @@ void create_slider_item(slider_group_t *slider_group, lv_obj_t *parent, const ch
 void create_btn_item(lv_obj_t *parent, const char *name, int col, int row);
 
 lv_obj_t *create_label_item(lv_obj_t *parent, const char *name, int col, int row, int cols);
+
+lv_obj_t *create_info_item(lv_obj_t *parent, const char *name, int col, int row, int cols);
 
 void create_btn_group_item(btn_group_t *btn_group, lv_obj_t *parent, int count, const char *name, const char *name0, const char *name1,
                            const char *name2, const char *name3, int row);

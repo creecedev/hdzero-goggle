@@ -36,6 +36,7 @@ typedef struct {
     void (*exit)();
     void (*on_roller)(uint8_t key);
     void (*on_click)(uint8_t key, int sel);
+    void (*on_right_button)(bool is_short);
 } page_pack_t;
 
 typedef struct {
@@ -48,7 +49,7 @@ extern progress_bar_t progress_bar;
 
 void main_menu_init();
 void main_menu_show(bool is_show);
-bool main_menu_isshow(void);
+bool main_menu_is_shown(void);
 
 void menu_nav(uint8_t key);
 
@@ -56,6 +57,7 @@ void submenu_enter();
 void submenu_exit();
 void submenu_roller(uint8_t key);
 void submenu_click(void);
+void submenu_right_button(bool is_short);
 void progress_bar_update();
 
 #endif

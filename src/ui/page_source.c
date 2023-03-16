@@ -5,13 +5,16 @@
 
 #include <minIni.h>
 
-#include "../core/common.hh"
-#include "../core/osd.h"
-#include "../driver/hardware.h"
-#include "../driver/it66121.h"
-#include "../driver/oled.h"
-#include "page_common.h"
-#include "page_scannow.h"
+#include "core/app_state.h"
+#include "core/common.hh"
+#include "core/dvr.h"
+#include "core/osd.h"
+#include "core/settings.h"
+#include "driver/hardware.h"
+#include "driver/it66121.h"
+#include "driver/oled.h"
+#include "ui/page_common.h"
+#include "ui/page_scannow.h"
 #include "ui/ui_main_menu.h"
 #include "ui/ui_porting.h"
 #include "ui/ui_style.h"
@@ -105,32 +108,32 @@ static void page_source_on_click(uint8_t key, int sel) {
     case 0:
         progress_bar.start = 1;
         HDZero_open();
-        switch_to_video(true);
-        g_menu_op = OPLEVEL_VIDEO;
+        app_switch_to_hdzero(true);
+        app_state_push(APP_STATE_VIDEO);
         g_source_info.source = SOURCE_HDZERO;
-        sel_audio_source(2);
-        enable_line_out(true);
+        dvr_select_audio_source(2);
+        dvr_enable_line_out(true);
         break;
 
     case 1:
         if (g_source_info.hdmi_in_status)
-            switch_to_hdmiin();
+            app_switch_to_hdmi_in();
         break;
 
     case 2: // AV in
-        switch_to_analog(0);
-        g_menu_op = OPLEVEL_VIDEO;
+        app_switch_to_analog(0);
+        app_state_push(APP_STATE_VIDEO);
         g_source_info.source = SOURCE_AV_IN;
-        sel_audio_source(2);
-        enable_line_out(true);
+        dvr_select_audio_source(2);
+        dvr_enable_line_out(true);
         break;
 
     case 3: // Module in
-        switch_to_analog(1);
-        g_menu_op = OPLEVEL_VIDEO;
+        app_switch_to_analog(1);
+        app_state_push(APP_STATE_VIDEO);
         g_source_info.source = SOURCE_EXPANSION;
-        sel_audio_source(2);
-        enable_line_out(true);
+        dvr_select_audio_source(2);
+        dvr_enable_line_out(true);
         break;
 
     case 4:
@@ -160,42 +163,6 @@ static void page_source_exit() {
     in_sourcepage = false;
 }
 
-void switch_to_analog(bool is_bay) {
-    Source_AV(is_bay);
-
-    osd_show(true);
-
-    lvgl_switch_to_720p();
-    draw_osd_clear();
-    lv_timer_handler();
-
-    Display_Osd(g_setting.record.osd);
-
-    g_setting.autoscan.last_source = is_bay ? SETTING_SOURCE_EXPANSION : SETTING_SOURCE_AV_IN;
-    ini_putl("autoscan", "last_source", g_setting.autoscan.last_source, SETTING_INI);
-}
-
-void switch_to_hdmiin() {
-    Source_HDMI_in();
-    IT66121_close();
-    sleep(2);
-
-    if (g_hw_stat.hdmiin_vtmg == 1)
-        lvgl_switch_to_1080p();
-    else
-        lvgl_switch_to_720p();
-
-    osd_show(true);
-    draw_osd_clear();
-    lv_timer_handler();
-
-    g_menu_op = OPLEVEL_VIDEO;
-    g_source_info.source = SOURCE_HDMI_IN;
-    enable_line_out(false);
-    g_setting.autoscan.last_source = SETTING_SOURCE_HDMI_IN;
-    ini_putl("autoscan", "last_source", g_setting.autoscan.last_source, SETTING_INI);
-}
-
 page_pack_t pp_source = {
     .p_arr = {
         .cur = 0,
@@ -207,4 +174,5 @@ page_pack_t pp_source = {
     .exit = page_source_exit,
     .on_roller = NULL,
     .on_click = page_source_on_click,
+    .on_right_button = NULL,
 };
